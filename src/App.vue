@@ -17,12 +17,30 @@
       <!-- Video Player -->
       <v-row v-if="video" class="video-player">
         <v-col cols="12" md="8">
-          <video v-if="videoUrl" :src="videoUrl" controls autoplay class="video"></video>
+          <div class="video-container">
+            <video
+              ref="video"
+              v-if="videoUrl"
+              :src="videoUrl"
+              controls
+              autoplay
+              class="video"
+              @timeupdate="trackWatchTime"
+              @ended="onVideoEnd"
+            ></video>
+          </div>
         </v-col>
         <v-col cols="12" md="4">
           <h3>{{ video.author }}</h3>
           <p>{{ video.date_created }} - {{ video.description }}</p>
           <p v-if="video.tags">Tags: {{ video.tags }}</p>
+
+          <!-- Display User Session and Vectorized Data -->
+          <div class="user-session">
+            <h4>Session Info</h4>
+            <p>Session ID: {{ sessionId }}</p>
+            <p>Search Vector: {{ JSON.stringify(sessionVectors, null, 2) }}</p>
+          </div>
 
           <!-- Loading Spinner -->
           <div v-if="loading" class="loading-spinner">
@@ -34,8 +52,11 @@
             ></v-progress-circular>
           </div>
 
+          <!-- Navigation Buttons -->
           <div class="navigation-buttons">
-            <el-button @click="loadPreviousVideo" :disabled="currentIndex === 0">Previous</el-button>
+            <el-button @click="loadPreviousVideo" :disabled="currentIndex === 0">
+              Previous
+            </el-button>
             <el-button @click="loadNextVideo">Next</el-button>
           </div>
         </v-col>
@@ -45,7 +66,9 @@
 </template>
 
 <script>
+import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
+
 export default {
   data() {
     return {
@@ -54,14 +77,44 @@ export default {
       videoUrl: null,
       videos: [],
       currentIndex: 0,
-      loading: false
+      loading: false,
+      sessionId: this.getSessionId(),
+      sessionVectors: {}, // Stores vectors for hashtags/search terms
+      watchTime: 0, // Tracks watch time for the current video
     };
   },
   methods: {
+    getSessionId() {
+      let sessionId = localStorage.getItem("sessionId");
+      if (!sessionId) {
+        sessionId = uuidv4();
+        localStorage.setItem("sessionId", sessionId);
+      }
+      return sessionId;
+    },
+    addOrUpdateVector(term, watchTime) {
+      if (!term) return;
+
+      // Initialize vector if term doesn't exist
+      if (!this.sessionVectors[term]) {
+        this.sessionVectors[term] = { count: 0, totalWatchTime: 0 };
+      }
+
+      // Update vector with new watch time
+      this.sessionVectors[term].count += 1;
+      this.sessionVectors[term].totalWatchTime += watchTime;
+
+      // Persist updated sessionVectors to localStorage
+      localStorage.setItem("sessionVectors", JSON.stringify(this.sessionVectors));
+    },
     async searchVideos() {
       this.loading = true;
       try {
-        const response = await axios.get(`http://localhost:8080/category?hashtag=${encodeURIComponent(this.searchTerm)}`);
+        const response = await axios.get(
+          `${process.env.VUE_APP_API_URL}/category?hashtag=${encodeURIComponent(
+            this.searchTerm
+          )}`
+        );
         this.videos = response.data;
 
         if (this.videos.length > 0) {
@@ -74,15 +127,41 @@ export default {
       }
     },
     async loadVideo(index) {
+      // Update vector for the current video before switching
+      if (this.video && this.watchTime > 0) {
+        const term = this.video.tags?.length
+          ? this.video.tags.join(", ")
+          : this.searchTerm;
+        this.addOrUpdateVector(term, this.watchTime);
+      }
+
+      // Reset watch time and load the next video
+      this.resetWatchTime();
       const videoData = this.videos[index];
       this.video = videoData;
 
       try {
-        const proxyResponse = await axios.get(`http://localhost:8080/proxy-video?url=${encodeURIComponent(videoData.playable_video_url)}`);
+        const proxyResponse = await axios.get(
+          `${process.env.VUE_APP_API_URL}/proxy-video?url=${encodeURIComponent(
+            videoData.playable_video_url
+          )}`
+        );
         this.videoUrl = proxyResponse.request.responseURL; // The final proxied video URL
       } catch (error) {
         console.error("Error fetching video through proxy:", error);
       }
+    },
+    resetWatchTime() {
+      this.watchTime = 0;
+    },
+    trackWatchTime(event) {
+      this.watchTime = event.target.currentTime;
+    },
+    onVideoEnd() {
+      const term = this.video.tags?.length
+        ? this.video.tags.join(", ")
+        : this.searchTerm;
+      this.addOrUpdateVector(term, this.watchTime);
     },
     loadNextVideo() {
       if (this.currentIndex < this.videos.length - 1) {
@@ -95,68 +174,67 @@ export default {
         this.currentIndex--;
         this.loadVideo(this.currentIndex);
       }
+    },
+  },
+  mounted() {
+    const savedVectors = localStorage.getItem("sessionVectors");
+    if (savedVectors) {
+      this.sessionVectors = JSON.parse(savedVectors);
     }
-  }
+  },
 };
+
+
 </script>
 
 <style scoped>
 .video-container {
-  text-align: center;
-  margin-top: 20px;
-}
-
-.video-player {
-  max-width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 80vh;
+  max-height: 80vh;
+  background-color: black;
+  overflow: hidden;
 }
 
 .video {
-  width: 100%;
-  height: auto;
-}
-
-.v-card {
-  max-width: 800px;
-  margin: 0 auto;
-}
-
-.v-btn {
-  margin-top: 10px;
-}
-
-
-/* Position the loading spinner to cover the full page */
-.loading-spinner {
-  position: fixed; /* Fixed position to overlay the whole screen */
-  top: 0; /* Align it to the top of the screen */
-  left: 0; /* Align it to the left of the screen */
-  width: 100vw; /* Make it the full viewport width */
-  height: 100vh; /* Make it the full viewport height */
-  background-color: rgba(0, 0, 0, 0.7); /* Black background with opacity */
-  display: flex; /* Flexbox to center the spinner */
-  justify-content: center; /* Center horizontally */
-  align-items: center; /* Center vertically */
-  z-index: 1000; /* Ensure it's on top of other content */
-}
-
-/* Optional: Adjust spinner size */
-.v-progress-circular {
-  color: white; /* White spinner color for contrast */
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
 }
 
 .search-bar {
   display: flex;
-  align-items: center; /* Vertically align the items in the center */
-  gap: 10px; /* Space between the input and button */
+  align-items: center;
+  gap: 10px;
   margin-top: 25px;
   margin-bottom: 25px;
 }
 
-.el-input {
-  flex: 1; /* Allow input to take available space */
+.loading-spinner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
 }
 
-.el-button {
-  flex-shrink: 0; /* Prevent the button from shrinking */
+.user-session {
+  margin-top: 20px;
+  padding: 10px;
+  background: #f9f9f9;
+  border: 1px solid #ddd;
+  border-radius: 4px;
 }
+
+.user-session h4 {
+  margin-bottom: 10px;
+}
+
 </style>
